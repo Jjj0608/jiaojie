@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>异常交接自动导入系统 (云端版)</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; padding: 15px; background: #f5f6fa; }
+  h2 { margin-bottom: 12px; color: #333; font-size: 20px; }
+  button { padding: 8px 16px; color: #fff; border: none; border-radius: 4px; cursor: pointer; margin-right: 8px; font-size: 14px; transition: opacity 0.2s; margin-bottom: 8px; }
+  button:hover { opacity: 0.8; }
+  .btn-primary { background: #2d8cf0; }
+  .btn-success { background: #4caf50; }
+  .btn-warning { background: #ff9800; }
+  .btn-danger  { background: #f44336; }
+  .btn-excel   { background: #217346; }
+  
+  #msg { margin: 12px 0; color: #d32f2f; font-size: 14px; font-weight: bold; }
+  
+  .toolbar { display: flex; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; background: #fff; padding: 12px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .search-box { padding: 8px 12px; width: 100%; max-width: 300px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; outline: none; flex: 1; min-width: 200px; }
+  .search-box:focus { border-color: #2d8cf0; }
+
+  /* 适配手机的表格容器 */
+  .table-container { width: 100%; overflow-x: auto; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  table { border-collapse: collapse; width: 100%; min-width: 800px; table-layout: fixed; }
+  th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; vertical-align: middle; }
+  th { background: #eef3fa; font-weight: 600; color: #333; }
+  
+  td.log-cell { width: 380px; max-width: 380px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: #555; }
+  td.log-cell:hover { background: #fffbe6; }
+  td.log-cell:empty { cursor: default; background: transparent; }
+  td.desc-cell { width: 300px; word-break: break-all; }
+  
+  .new-row { background-color: #e6ffed !important; transition: background 1.5s; }
+  
+  #logModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,.4); z-index: 99; }
+  #logModal .box { background: #fff; width: 90%; max-width: 600px; max-height: 70vh; overflow-y: auto; margin: 80px auto; padding: 20px; border-radius: 6px; white-space: pre-wrap; font-size: 13px; line-height: 1.7; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+  #logModal .box h3 { margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+  #logModal .box button { margin-top: 15px; }
+  .hidden-file { display: none; }
+</style>
+</head>
+<body>
+
+<h2>异常交接自动导入系统</h2>
+
+<div class="toolbar">
+  <input type="file" id="fileInput" accept=".xlsx, .xls" class="hidden-file">
+  <input type="file" id="jsonInput" accept=".json" class="hidden-file">
+  
+  <button id="btnImport" class="btn-primary">📥 导入 Excel</button>
+  <button id="btnExportExcel" class="btn-excel">📤 导出 Excel</button>
+  <button id="btnExportJson" class="btn-success">💾 本地备份</button>
+  <button id="btnImportJson" class="btn-warning">📂 恢复备份</button>
+  <button id="btnReset" class="btn-danger">🗑️ 清空云端</button>
+  
+  <input type="text" id="searchInput" class="search-box" placeholder="🔍 输入运单号检索...">
+</div>
+
+<div id="msg">系统初始化中，正在连接云端...</div>
+
+<div class="table-container">
+  <table id="dataTable">
+    <thead>
+      <tr>
+        <th style="width:120px;">运单号</th>
+        <th style="width:180px;">异常类型</th>
+        <th style="width:300px;">情况说明</th>
+        <th style="width:380px;">log</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div id="logModal">
+  <div class="box">
+    <h3 id="modalTitle">日志详情</h3>
+    <div id="modalBody"></div>
+    <button class="btn-primary" onclick="document.getElementById('logModal').style.display='none'">关闭</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+/* ================= 配置你的云端 API 区 ================= */
+const JSONBIN_KEY = "$2a$10$9WuMBGM5So0M5zV9vUuVQ.qp9x0uji5tsyZ5n3gB3Vv2EqSPNFAIi"; // 替换为你的 Master Key
+const JSONBIN_ID = "6b06e583ffd5d16053dd24d3";   // 替换为你的 Bin ID
+
+// 初始数据（清空后会恢复成这个，你也可以设为 [] 完全清空）
+const DEFAULT_DATA = [
+ 
+];
+/* ======================================================= */
+
+let tableData = [];
+let currentSearchKeyword = "";
+
+/* ============ 云端数据拉取 ============ */
+async function loadDataFromCloud() {
+  const msg = document.getElementById("msg");
+  msg.textContent = "正在从云端同步数据...";
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}/latest`, {
+      method: "GET",
+      headers: { "X-Master-Key": JSONBIN_KEY }
+    });
+    if (!res.ok) throw new Error("网络请求失败，请检查 Key 和 ID");
+    
+    const json = await res.json();
+    let data = json.record;
+    
+    if (!Array.isArray(data)) {
+      // 如果云端不是数组，说明是第一次或格式坏了
+      tableData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+      await saveDataToCloud(); 
+    } else {
+      tableData = data;
+    }
+    
+    msg.textContent = "云端数据已同步。";
+    renderTable();
+  } catch (err) {
+    msg.textContent = "⚠️ 云端同步失败：" + err.message + "（请检查配置）";
+  }
+}
+
+/* ============ 云端数据保存 ============ */
+async function saveDataToCloud() {
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Master-Key": JSONBIN_KEY
+      },
+      body: JSON.stringify(tableData)
+    });
+    if (!res.ok) throw new Error("保存到云端失败");
+    console.log("云端数据已自动保存");
+  } catch (err) {
+    alert("⚠️ 无法将数据保存到云端：" + err.message);
+  }
+}
+
+/* ============ 界面渲染 ============ */
+function renderTable(newNos = []) {
+  const tbody = document.getElementById("tbody");
+  tbody.innerHTML = "";
+  
+  const filteredData = tableData.filter(row => {
+    if (!currentSearchKeyword) return true;
+    return String(row.no).toLowerCase().includes(currentSearchKeyword.toLowerCase());
+  });
+
+  if (filteredData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#999; padding:20px;">没有找到匹配的运单记录</td></tr>';
+    return;
+  }
+
+  filteredData.forEach((row) => {
+    const originalIdx = tableData.findIndex(item => item.no === row.no);
+    const tr = document.createElement("tr");
+    if (newNos.includes(row.no)) {
+      tr.className = "new-row";
+      setTimeout(() => { tr.className = ""; }, 2000);
+    }
+    
+    let displayLog = "";
+    if (row.log && row.log.length > 0) {
+      const validLogs = row.log.filter(l => !l.includes("无变化"));
+      if (validLogs.length > 0) displayLog = validLogs[validLogs.length - 1];
+    }
+    
+    tr.innerHTML = `
+      <td>${row.no}</td>
+      <td>${row.type || ""}</td>
+      <td class="desc-cell">${row.desc || ""}</td>
+      <td class="log-cell" title="${displayLog ? '点击查看完整日志' : ''}" data-idx="${originalIdx}">${displayLog}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  
+  document.querySelectorAll("td.log-cell").forEach(td => {
+    td.onclick = () => {
+      if (!td.textContent.trim()) return;
+      showLogModal(tableData[+td.dataset.idx]);
+    };
+  });
+}
+
+function showLogModal(row) {
+  document.getElementById("modalTitle").textContent = "运单号 " + row.no + " 的历史记录";
+  const body = document.getElementById("modalBody");
+  const validLogs = (row.log || []).filter(l => !l.includes("无变化"));
+  body.textContent = validLogs.length ? validLogs.join("\n") : "暂无有效变更日志";
+  document.getElementById("logModal").style.display = "block";
+}
+
+/* ============ Excel 导入逻辑 ============ */
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async function(evt) {
+    try {
+      const wb = XLSX.read(evt.target.result, { type: "array" });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+      const timeStr = new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+      
+      let addedCount = 0, updatedCount = 0, noChangeCount = 0;
+      let newNos = []; 
+
+      for (let i = 2; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r) continue;
+        const no = String(r[2] ?? "").trim();
+        const type = String(r[3] ?? "").trim();
+        const desc = String(r[4] ?? "").trim();
+        if (!no) continue; 
+
+        const existingRow = tableData.find(item => item.no === no);
+        if (existingRow) {
+          const oldDesc = (existingRow.desc || "").trim();
+          if (oldDesc !== desc) {
+            if (!existingRow.log) existingRow.log = [];
+            existingRow.log.push(`${timeStr} | 旧值：${oldDesc || "(空)"} | 新值：${desc || "(空)"}`);
+            existingRow.desc = desc;
+            updatedCount++;
+          } else {
+            if (!existingRow.log) existingRow.log = [];
+            existingRow.log.push(`${timeStr} | 无变化`);
+            noChangeCount++;
+          }
+        } else {
+          tableData.push({ no, type, desc, log: [`${timeStr} | 新增导入 | 旧值：(空) | 新值：${desc || "(空)"}`] });
+          newNos.push(no);
+          addedCount++;
+        }
+      }
+
+      renderTable(newNos);
+      document.getElementById("msg").textContent = "正在保存至云端...";
+      await saveDataToCloud();
+      document.getElementById("msg").textContent = `导入完成！新增 ${addedCount}，更新 ${updatedCount}，无变化 ${noChangeCount}。`;
+    } catch (err) {
+      document.getElementById("msg").textContent = "解析 Excel 失败：" + err.message;
+    }
+    e.target.value = "";
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ============ 事件绑定区 ============ */
+document.getElementById("btnImport").onclick = () => document.getElementById("fileInput").click();
+document.getElementById("fileInput").onchange = handleFileSelect;
+
+document.getElementById("searchInput").addEventListener("input", (e) => {
+  currentSearchKeyword = e.target.value.trim();
+  renderTable(); 
+});
+
+// 【重点修改】清空全部：覆盖为 DEFAULT_DATA，而不是删除 Bin
+document.getElementById("btnReset").onclick = async () => {
+  if (confirm("⚠️ 警告：确定要清空云端所有数据并恢复初始状态吗？")) {
+    document.getElementById("msg").textContent = "正在重置云端数据...";
+    // 深拷贝一份默认数据
+    tableData = JSON.parse(JSON.stringify(DEFAULT_DATA));
+    renderTable();
+    
+    // 发送 PUT 请求覆盖原有内容
+    try {
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Master-Key": JSONBIN_KEY
+        },
+        body: JSON.stringify(tableData)
+      });
+      if (!res.ok) throw new Error("重置请求失败");
+      document.getElementById("msg").textContent = "云端数据已成功重置。";
+      currentSearchKeyword = "";
+      document.getElementById("searchInput").value = "";
+      renderTable();
+    } catch (err) {
+      document.getElementById("msg").textContent = "⚠️ 重置失败：" + err.message;
+    }
+  }
+};
+
+// 本地 JSON 导入导出
+document.getElementById("btnExportJson").onclick = () => {
+  const blob = new Blob([JSON.stringify(tableData, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "异常交接数据备份_" + new Date().toISOString().slice(0,10) + ".json";
+  a.click();
+};
+
+document.getElementById("btnImportJson").onclick = () => document.getElementById("jsonInput").click();
+document.getElementById("jsonInput").onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (evt) => {
+    try {
+      const importedData = JSON.parse(evt.target.result);
+      if (Array.isArray(importedData) && importedData.length > 0 && importedData[0].no) {
+        if(confirm("⚠️ 确定要覆盖云端当前数据吗？")) {
+          tableData = importedData;
+          renderTable();
+          await saveDataToCloud();
+          document.getElementById("msg").textContent = "备份导入成功并已同步。";
+        }
+      } else alert("文件格式不正确！");
+    } catch (err) { alert("解析失败：" + err.message); }
+    e.target.value = "";
+  };
+  reader.readAsText(file);
+};
+
+document.getElementById("btnExportExcel").onclick = () => {
+  const wsData = [["运单号", "异常类型", "情况说明", "变更历史(log)"]];
+  tableData.forEach(row => {
+    const validLogs = (row.log || []).filter(l => !l.includes("无变化"));
+    wsData.push([row.no, row.type, row.desc, validLogs.join("\n")]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "异常数据");
+  ws['!cols'] = [{ wch: 15 }, { wch: 20 }, { wch: 40 }, { wch: 60 }];
+  XLSX.writeFile(wb, "异常交接数据_" + new Date().toISOString().slice(0,10) + ".xlsx");
+};
+
+// 启动
+loadDataFromCloud();
+</script>
+</body>
+</html>
