@@ -21,7 +21,6 @@
   .search-box { padding: 8px 12px; width: 100%; max-width: 300px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; outline: none; flex: 1; min-width: 200px; }
   .search-box:focus { border-color: #2d8cf0; }
 
-  /* 适配手机的表格容器 */
   .table-container { width: 100%; overflow-x: auto; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
   table { border-collapse: collapse; width: 100%; min-width: 800px; table-layout: fixed; }
   th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; vertical-align: middle; }
@@ -88,16 +87,14 @@
 const JSONBIN_KEY = "$2a$10$9WuMBGM5So0M5zV9vUuVQ.qp9x0uji5tsyZ5n3gB3Vv2EqSPNFAIi"; // 替换为你的 Master Key
 const JSONBIN_ID = "6b06e583ffd5d16053dd24d3";   // 替换为你的 Bin ID
 
-// 初始数据（清空后会恢复成这个，你也可以设为 [] 完全清空）
 const DEFAULT_DATA = [
- 
+  { no: "1661357902", type: "RD09审结已补传已查验", desc: "客户要求删单" }
 ];
 /* ======================================================= */
 
 let tableData = [];
 let currentSearchKeyword = "";
 
-/* ============ 云端数据拉取 ============ */
 async function loadDataFromCloud() {
   const msg = document.getElementById("msg");
   msg.textContent = "正在从云端同步数据...";
@@ -112,7 +109,6 @@ async function loadDataFromCloud() {
     let data = json.record;
     
     if (!Array.isArray(data)) {
-      // 如果云端不是数组，说明是第一次或格式坏了
       tableData = JSON.parse(JSON.stringify(DEFAULT_DATA));
       await saveDataToCloud(); 
     } else {
@@ -122,11 +118,10 @@ async function loadDataFromCloud() {
     msg.textContent = "云端数据已同步。";
     renderTable();
   } catch (err) {
-    msg.textContent = "⚠️ 云端同步失败：" + err.message + "（请检查配置）";
+    msg.textContent = "⚠️ 云端同步失败：" + err.message;
   }
 }
 
-/* ============ 云端数据保存 ============ */
 async function saveDataToCloud() {
   try {
     const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, {
@@ -138,13 +133,11 @@ async function saveDataToCloud() {
       body: JSON.stringify(tableData)
     });
     if (!res.ok) throw new Error("保存到云端失败");
-    console.log("云端数据已自动保存");
   } catch (err) {
     alert("⚠️ 无法将数据保存到云端：" + err.message);
   }
 }
 
-/* ============ 界面渲染 ============ */
 function renderTable(newNos = []) {
   const tbody = document.getElementById("tbody");
   tbody.innerHTML = "";
@@ -198,7 +191,7 @@ function showLogModal(row) {
   document.getElementById("logModal").style.display = "block";
 }
 
-/* ============ Excel 导入逻辑 ============ */
+/* ============ Excel 导入逻辑（重点修改） ============ */
 function handleFileSelect(e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -216,17 +209,27 @@ function handleFileSelect(e) {
         const r = rows[i];
         if (!r) continue;
         const no = String(r[2] ?? "").trim();
-        const type = String(r[3] ?? "").trim();
-        const desc = String(r[4] ?? "").trim();
+        const newType = String(r[3] ?? "").trim(); // 提取异常类型
+        const newDesc = String(r[4] ?? "").trim(); // 提取情况说明
+        
         if (!no) continue; 
 
         const existingRow = tableData.find(item => item.no === no);
         if (existingRow) {
+          const oldType = (existingRow.type || "").trim();
           const oldDesc = (existingRow.desc || "").trim();
-          if (oldDesc !== desc) {
+          
+          // 只要有任意一个发生变化，就记录下来
+          let changeMsgs = [];
+          if (oldType !== newType) changeMsgs.push(`异常类型: ${oldType || "(空)"} → ${newType || "(空)"}`);
+          if (oldDesc !== newDesc) changeMsgs.push(`情况说明: ${oldDesc || "(空)"} → ${newDesc || "(空)"}`);
+
+          if (changeMsgs.length > 0) {
             if (!existingRow.log) existingRow.log = [];
-            existingRow.log.push(`${timeStr} | 旧值：${oldDesc || "(空)"} | 新值：${desc || "(空)"}`);
-            existingRow.desc = desc;
+            // 用竖线把变化的内容拼起来
+            existingRow.log.push(`${timeStr} | ${changeMsgs.join(" ; ")}`);
+            existingRow.type = newType; // 更新类型
+            existingRow.desc = newDesc; // 更新说明
             updatedCount++;
           } else {
             if (!existingRow.log) existingRow.log = [];
@@ -234,7 +237,8 @@ function handleFileSelect(e) {
             noChangeCount++;
           }
         } else {
-          tableData.push({ no, type, desc, log: [`${timeStr} | 新增导入 | 旧值：(空) | 新值：${desc || "(空)"}`] });
+          // 新增行
+          tableData.push({ no, type: newType, desc: newDesc, log: [`${timeStr} | 新增导入 | 类型：${newType || "(空)"} | 说明：${newDesc || "(空)"}`] });
           newNos.push(no);
           addedCount++;
         }
@@ -261,22 +265,15 @@ document.getElementById("searchInput").addEventListener("input", (e) => {
   renderTable(); 
 });
 
-// 【重点修改】清空全部：覆盖为 DEFAULT_DATA，而不是删除 Bin
 document.getElementById("btnReset").onclick = async () => {
   if (confirm("⚠️ 警告：确定要清空云端所有数据并恢复初始状态吗？")) {
     document.getElementById("msg").textContent = "正在重置云端数据...";
-    // 深拷贝一份默认数据
     tableData = JSON.parse(JSON.stringify(DEFAULT_DATA));
     renderTable();
-    
-    // 发送 PUT 请求覆盖原有内容
     try {
       const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_ID}`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Master-Key": JSONBIN_KEY
-        },
+        headers: { "Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY },
         body: JSON.stringify(tableData)
       });
       if (!res.ok) throw new Error("重置请求失败");
