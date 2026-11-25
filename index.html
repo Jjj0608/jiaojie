@@ -22,7 +22,7 @@
   .search-box:focus { border-color: #2d8cf0; }
 
   .table-container { width: 100%; overflow-x: auto; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-  table { border-collapse: collapse; width: 100%; min-width: 800px; table-layout: fixed; }
+  table { border-collapse: collapse; width: 100%; min-width: 1100px; table-layout: fixed; }
   th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; vertical-align: middle; }
   th { background: #eef3fa; font-weight: 600; color: #333; }
   
@@ -63,9 +63,12 @@
   <table id="dataTable">
     <thead>
       <tr>
+        <th style="width:80px;">序号</th> <!-- 新增序号列 -->
+        <th style="width:120px;">申报类型</th> <!-- 新增申报类型列 -->
         <th style="width:120px;">运单号</th>
-        <th style="width:180px;">异常类型</th>
-        <th style="width:300px;">情况说明</th>
+        <th style="width:160px;">异常类型</th>
+        <th style="width:260px;">情况说明</th>
+        <th style="width:140px;">申报时间</th>
         <th style="width:380px;">log</th>
       </tr>
     </thead>
@@ -87,9 +90,9 @@
 const JSONBIN_KEY = "$2a$10$9WuMBGM5So0M5zV9vUuVQ.qp9x0uji5tsyZ5n3gB3Vv2EqSPNFAIi"; // 替换为你的 Master Key
 const JSONBIN_ID = "6b06e583ffd5d16053dd24d3";   // 替换为你的 Bin ID
 
+// 初始数据增加 seq (序号) 和 declType (申报类型) 字段
 const DEFAULT_DATA = [
-  { no: "1661357902", type: "RD09审结已补传已查验", desc: "客户要求删单" }
-];
+  ];
 /* ======================================================= */
 
 let tableData = [];
@@ -148,7 +151,7 @@ function renderTable(newNos = []) {
   });
 
   if (filteredData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#999; padding:20px;">没有找到匹配的运单记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#999; padding:20px;">没有找到匹配的运单记录</td></tr>';
     return;
   }
 
@@ -167,9 +170,12 @@ function renderTable(newNos = []) {
     }
     
     tr.innerHTML = `
+      <td>${row.seq || ""}</td>
+      <td>${row.declType || ""}</td>
       <td>${row.no}</td>
       <td>${row.type || ""}</td>
       <td class="desc-cell">${row.desc || ""}</td>
+      <td>${row.declareTime || ""}</td>
       <td class="log-cell" title="${displayLog ? '点击查看完整日志' : ''}" data-idx="${originalIdx}">${displayLog}</td>
     `;
     tbody.appendChild(tr);
@@ -191,7 +197,7 @@ function showLogModal(row) {
   document.getElementById("logModal").style.display = "block";
 }
 
-/* ============ Excel 导入逻辑（重点修改） ============ */
+/* ============ Excel 导入逻辑 ============ */
 function handleFileSelect(e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -208,9 +214,14 @@ function handleFileSelect(e) {
       for (let i = 2; i < rows.length; i++) {
         const r = rows[i];
         if (!r) continue;
+        
+        // 【重点】根据 Excel 实际列顺序提取数据 (假设第1列是序号，第2列是申报类型，第3列是运单号)
+        const newSeq = String(r[0] ?? "").trim(); 
+        const newDeclType = String(r[1] ?? "").trim(); 
         const no = String(r[2] ?? "").trim();
-        const newType = String(r[3] ?? "").trim(); // 提取异常类型
-        const newDesc = String(r[4] ?? "").trim(); // 提取情况说明
+        const newType = String(r[3] ?? "").trim();
+        const newDesc = String(r[4] ?? "").trim();
+        const newDeclareTime = String(r[5] ?? "").trim(); 
         
         if (!no) continue; 
 
@@ -219,26 +230,39 @@ function handleFileSelect(e) {
           const oldType = (existingRow.type || "").trim();
           const oldDesc = (existingRow.desc || "").trim();
           
-          // 只要有任意一个发生变化，就记录下来
+          // 仅检查 异常类型 和 情况说明 是否变化
           let changeMsgs = [];
           if (oldType !== newType) changeMsgs.push(`异常类型: ${oldType || "(空)"} → ${newType || "(空)"}`);
           if (oldDesc !== newDesc) changeMsgs.push(`情况说明: ${oldDesc || "(空)"} → ${newDesc || "(空)"}`);
 
           if (changeMsgs.length > 0) {
             if (!existingRow.log) existingRow.log = [];
-            // 用竖线把变化的内容拼起来
             existingRow.log.push(`${timeStr} | ${changeMsgs.join(" ; ")}`);
-            existingRow.type = newType; // 更新类型
-            existingRow.desc = newDesc; // 更新说明
+            existingRow.type = newType; 
+            existingRow.desc = newDesc; 
             updatedCount++;
           } else {
             if (!existingRow.log) existingRow.log = [];
             existingRow.log.push(`${timeStr} | 无变化`);
             noChangeCount++;
           }
+          
+          // 【核心修改】直接覆盖 序号、申报类型、申报时间，不生成日志
+          existingRow.seq = newSeq;
+          existingRow.declType = newDeclType;
+          if (newDeclareTime) existingRow.declareTime = newDeclareTime;
+
         } else {
           // 新增行
-          tableData.push({ no, type: newType, desc: newDesc, log: [`${timeStr} | 新增导入 | 类型：${newType || "(空)"} | 说明：${newDesc || "(空)"}`] });
+          tableData.push({ 
+            seq: newSeq,
+            declType: newDeclType,
+            no, 
+            type: newType, 
+            desc: newDesc, 
+            declareTime: newDeclareTime,
+            log: [`${timeStr} | 新增导入 | 类型：${newType || "(空)"} | 说明：${newDesc || "(空)"}`] 
+          });
           newNos.push(no);
           addedCount++;
         }
@@ -319,15 +343,15 @@ document.getElementById("jsonInput").onchange = (e) => {
 };
 
 document.getElementById("btnExportExcel").onclick = () => {
-  const wsData = [["运单号", "异常类型", "情况说明", "变更历史(log)"]];
+  const wsData = [["序号", "申报类型", "运单号", "异常类型", "情况说明", "申报时间", "变更历史(log)"]];
   tableData.forEach(row => {
     const validLogs = (row.log || []).filter(l => !l.includes("无变化"));
-    wsData.push([row.no, row.type, row.desc, validLogs.join("\n")]);
+    wsData.push([row.seq || "", row.declType || "", row.no, row.type, row.desc, row.declareTime || "", validLogs.join("\n")]);
   });
   const ws = XLSX.utils.aoa_to_sheet(wsData);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "异常数据");
-  ws['!cols'] = [{ wch: 15 }, { wch: 20 }, { wch: 40 }, { wch: 60 }];
+  ws['!cols'] = [{ wch: 8 }, { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 40 }, { wch: 15 }, { wch: 60 }];
   XLSX.writeFile(wb, "异常交接数据_" + new Date().toISOString().slice(0,10) + ".xlsx");
 };
 
