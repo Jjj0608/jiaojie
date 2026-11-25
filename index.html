@@ -29,7 +29,7 @@
   td.log-cell { width: 380px; max-width: 380px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; color: #555; }
   td.log-cell:hover { background: #fffbe6; }
   td.log-cell:empty { cursor: default; background: transparent; }
-  td.desc-cell { width: 300px; word-break: break-all; }
+  td.desc-cell { width: 260px; word-break: break-all; }
   
   .new-row { background-color: #e6ffed !important; transition: background 1.5s; }
   
@@ -63,12 +63,12 @@
   <table id="dataTable">
     <thead>
       <tr>
-        <th style="width:80px;">序号</th> <!-- 新增序号列 -->
-        <th style="width:120px;">申报类型</th> <!-- 新增申报类型列 -->
+        <th style="width:80px;">序号</th>
+        <th style="width:120px;">申报类型</th>
         <th style="width:120px;">运单号</th>
         <th style="width:160px;">异常类型</th>
         <th style="width:260px;">情况说明</th>
-        <th style="width:140px;">申报时间</th>
+        <th style="width:120px;">申报时间</th>
         <th style="width:380px;">log</th>
       </tr>
     </thead>
@@ -90,9 +90,9 @@
 const JSONBIN_KEY = "$2a$10$9WuMBGM5So0M5zV9vUuVQ.qp9x0uji5tsyZ5n3gB3Vv2EqSPNFAIi"; // 替换为你的 Master Key
 const JSONBIN_ID = "6b06e583ffd5d16053dd24d3";   // 替换为你的 Bin ID
 
-// 初始数据增加 seq (序号) 和 declType (申报类型) 字段
 const DEFAULT_DATA = [
-  ];
+  
+];
 /* ======================================================= */
 
 let tableData = [];
@@ -141,6 +141,28 @@ async function saveDataToCloud() {
   }
 }
 
+/* ============ 【新增】统一的日期格式化函数 ============ */
+// 识别 2026/9/9、2026.9.9、2026年9月9日 等格式，统一转为 2026-09-09
+function formatDate(dateStr) {
+  if (!dateStr) return "";
+  // 提取所有的数字
+  const matches = String(dateStr).match(/\d+/g);
+  if (matches && matches.length >= 3) {
+    const year = matches[0];
+    const month = matches[1].padStart(2, '0');
+    const day = matches[2].padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  // 如果是一长串数字，比如 Excel 的纯数字时间戳，直接用 XLSX 解析
+  if (/^\d{5}$/.test(dateStr)) {
+    const parsed = XLSX.SSF.parse_date_code(dateStr);
+    if (parsed) {
+      return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+    }
+  }
+  return dateStr; // 无法识别则原样返回
+}
+
 function renderTable(newNos = []) {
   const tbody = document.getElementById("tbody");
   tbody.innerHTML = "";
@@ -175,7 +197,7 @@ function renderTable(newNos = []) {
       <td>${row.no}</td>
       <td>${row.type || ""}</td>
       <td class="desc-cell">${row.desc || ""}</td>
-      <td>${row.declareTime || ""}</td>
+      <td>${formatDate(row.declareTime)}</td>
       <td class="log-cell" title="${displayLog ? '点击查看完整日志' : ''}" data-idx="${originalIdx}">${displayLog}</td>
     `;
     tbody.appendChild(tr);
@@ -204,8 +226,10 @@ function handleFileSelect(e) {
   const reader = new FileReader();
   reader.onload = async function(evt) {
     try {
-      const wb = XLSX.read(evt.target.result, { type: "array" });
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+      const wb = XLSX.read(evt.target.result, { type: "array", cellDates: true }); // 尝试让 XLSX 解析日期
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" }); 
+      // raw: false 会将所有单元格强制转为文本，防止纯数字日期乱码
+      
       const timeStr = new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
       
       let addedCount = 0, updatedCount = 0, noChangeCount = 0;
@@ -215,13 +239,15 @@ function handleFileSelect(e) {
         const r = rows[i];
         if (!r) continue;
         
-        // 【重点】根据 Excel 实际列顺序提取数据 (假设第1列是序号，第2列是申报类型，第3列是运单号)
         const newSeq = String(r[0] ?? "").trim(); 
         const newDeclType = String(r[1] ?? "").trim(); 
         const no = String(r[2] ?? "").trim();
         const newType = String(r[3] ?? "").trim();
         const newDesc = String(r[4] ?? "").trim();
-        const newDeclareTime = String(r[5] ?? "").trim(); 
+        
+        // 提取日期并使用函数格式化
+        let newDeclareTime = String(r[5] ?? "").trim(); 
+        newDeclareTime = formatDate(newDeclareTime); 
         
         if (!no) continue; 
 
@@ -230,7 +256,6 @@ function handleFileSelect(e) {
           const oldType = (existingRow.type || "").trim();
           const oldDesc = (existingRow.desc || "").trim();
           
-          // 仅检查 异常类型 和 情况说明 是否变化
           let changeMsgs = [];
           if (oldType !== newType) changeMsgs.push(`异常类型: ${oldType || "(空)"} → ${newType || "(空)"}`);
           if (oldDesc !== newDesc) changeMsgs.push(`情况说明: ${oldDesc || "(空)"} → ${newDesc || "(空)"}`);
@@ -247,13 +272,11 @@ function handleFileSelect(e) {
             noChangeCount++;
           }
           
-          // 【核心修改】直接覆盖 序号、申报类型、申报时间，不生成日志
           existingRow.seq = newSeq;
           existingRow.declType = newDeclType;
           if (newDeclareTime) existingRow.declareTime = newDeclareTime;
 
         } else {
-          // 新增行
           tableData.push({ 
             seq: newSeq,
             declType: newDeclType,
